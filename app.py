@@ -1,59 +1,58 @@
 from flask import Flask, jsonify
-import random
+import requests
+import os
 
 app = Flask(__name__)
 
+# Set your public proxy URL here (LocalTunnel)
+PROXY_BASE_URL = "https://old-teeth-work.loca.lt"
+
 @app.route("/besttrade")
 def best_trade():
-    # Simulated spot price
-    spot_price = 22590
+    try:
+        # Fetch spot price
+        spot_res = requests.get(f"{PROXY_BASE_URL}/index-price?symbol=NIFTY", timeout=10)
+        spot_data = spot_res.json()
+        spot_price = spot_data.get("price")
 
-    # Sample option chain (simulated)
-    option_chain = [
-        {"strike": 22500, "CE": {"volume": 10500, "lastPrice": 96}, "PE": {"volume": 8500, "lastPrice": 70}},
-        {"strike": 22550, "CE": {"volume": 15200, "lastPrice": 78.4}, "PE": {"volume": 6300, "lastPrice": 94}},
-        {"strike": 22600, "CE": {"volume": 18800, "lastPrice": 60}, "PE": {"volume": 7200, "lastPrice": 110}},
-        {"strike": 22650, "CE": {"volume": 9700, "lastPrice": 48}, "PE": {"volume": 9300, "lastPrice": 128}},
-    ]
+        # Fetch option chain
+        chain_res = requests.get(f"{PROXY_BASE_URL}/option-chain?symbol=NIFTY", timeout=10)
+        chain_data = chain_res.json()
 
-    # Determine ITM CE (strike just below spot)
-    itm_ce_strike = max([o["strike"] for o in option_chain if o["strike"] < spot_price])
+        option_chain = chain_data['filtered']['data']
 
-    # Get CE info
-    selected = next((o for o in option_chain if o["strike"] == itm_ce_strike), None)
-    if not selected:
-        return jsonify({"error": "No suitable option found"})
+        # Find nearest ITM CE below spot
+        itm_ce = None
+        for item in option_chain:
+            if item['strikePrice'] < spot_price and 'CE' in item:
+                itm_ce = item
+        if not itm_ce:
+            return jsonify({"error": "No ITM CE found"})
 
-    ce_data = selected["CE"]
+        strike = itm_ce["strikePrice"]
+        ce_data = itm_ce["CE"]
+        ltp = ce_data["lastPrice"]
+        volume = ce_data["totalTradedVolume"]
 
-    # Simulated indicators
-    macd_bullish = random.choice([True, False])
-    rsi = random.randint(40, 65)
-    vwap_confirmation = random.choice([True, False])
+        # Simplified indicator logic (mock for now)
+        if volume > 10000:
+            return jsonify({
+                "symbol": "NIFTY",
+                "type": "CE",
+                "strike": strike,
+                "ltp": ltp,
+                "entry": ltp,
+                "sl": round(ltp * 0.9, 2),
+                "target": round(ltp * 1.2, 2),
+                "volume": volume
+            })
+        else:
+            return jsonify({"message": "Volume too low for signal"})
 
-    # Trade decision logic
-    if macd_bullish and rsi < 60 and vwap_confirmation:
-        return jsonify({
-            "symbol": "NIFTY",
-            "type": "CE",
-            "strike": itm_ce_strike,
-            "ltp": ce_data["lastPrice"],
-            "entry": ce_data["lastPrice"],
-            "sl": round(ce_data["lastPrice"] * 0.9, 2),
-            "target": round(ce_data["lastPrice"] * 1.2, 2),
-            "volume": ce_data["volume"],
-            "indicators": {
-                "MACD": macd_bullish,
-                "RSI": rsi,
-                "VWAP": vwap_confirmation
-            }
-        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-    else:
-        return jsonify({"message": "No strong trade found. Indicators not aligned."})
-
-# Run on correct port and IP for Render
+# Required for Render
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
