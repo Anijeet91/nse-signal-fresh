@@ -5,7 +5,7 @@ import os
 app = Flask(__name__)
 
 # Set your public proxy URL here (LocalTunnel)
-PROXY_BASE_URL = "https://pink-shrimps-camp.loca.lt"
+PROXY_BASE_URL = "https://cyan-chicken-lay.loca.lt"
 
 @app.route("/besttrade")
 def best_trade():
