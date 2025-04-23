@@ -3,7 +3,7 @@ import requests
 
 app = Flask(__name__)
 
-PROXY_BASE_URL = "https://swift-sides-glow.loca.lt"
+PROXY_BASE_URL = "https://famous-paths-draw.loca.lt"
 
 @app.route("/")
 def home():
@@ -85,5 +85,6 @@ def format_trade(type, option):
         "volume": option["totalTradedVolume"]
     }
 
+# ✅ THIS IS THE FIX FOR RENDER DEPLOYMENT
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False, host='0.0.0.0', port=5000)
