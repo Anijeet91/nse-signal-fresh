@@ -1,58 +1,89 @@
 from flask import Flask, jsonify
 import requests
-import os
 
 app = Flask(__name__)
 
-# Set your public proxy URL here (LocalTunnel)
-PROXY_BASE_URL = "https://thick-jeans-lie.loca.lt"
+PROXY_BASE_URL = "https://nasty-candies-cut.loca.lt"
+
+@app.route("/")
+def home():
+    return jsonify({"status": "NSE Signal API Running"})
 
 @app.route("/besttrade")
-def best_trade():
+def get_best_trade():
     try:
-        # Fetch spot price
-        spot_res = requests.get(f"{PROXY_BASE_URL}/index-price?symbol=NIFTY", timeout=10)
-        spot_data = spot_res.json()
-        spot_price = spot_data.get("price")
+        spot = get_spot_price()
+        option_chain = get_option_chain()
 
-        # Fetch option chain
-        chain_res = requests.get(f"{PROXY_BASE_URL}/option-chain?symbol=NIFTY", timeout=10)
-        chain_data = chain_res.json()
+        best = None
 
-        option_chain = chain_data['filtered']['data']
-
-        # Find nearest ITM CE below spot
-        itm_ce = None
         for item in option_chain:
-            if item['strikePrice'] < spot_price and 'CE' in item:
-                itm_ce = item
-        if not itm_ce:
-            return jsonify({"error": "No ITM CE found"})
+            strike = item["strikePrice"]
+            ce = item.get("CE", {})
+            pe = item.get("PE", {})
 
-        strike = itm_ce["strikePrice"]
-        ce_data = itm_ce["CE"]
-        ltp = ce_data["lastPrice"]
-        volume = ce_data["totalTradedVolume"]
+            # Entry decision based on trend
+            if spot > ce.get("strikePrice", 0):  # Spot is bullish, check CE
+                if is_trade_valid(ce, spot, "CE"):
+                    best = format_trade("CE", ce)
+                    break
+            elif spot < pe.get("strikePrice", 0):  # Spot is bearish, check PE
+                if is_trade_valid(pe, spot, "PE"):
+                    best = format_trade("PE", pe)
+                    break
 
-        # Simplified indicator logic (mock for now)
-        if volume > 10000:
-            return jsonify({
-                "symbol": "NIFTY",
-                "type": "CE",
-                "strike": strike,
-                "ltp": ltp,
-                "entry": ltp,
-                "sl": round(ltp * 0.9, 2),
-                "target": round(ltp * 1.2, 2),
-                "volume": volume
-            })
+        if best:
+            return jsonify(best)
         else:
-            return jsonify({"message": "Volume too low for signal"})
-
+            return jsonify({"message": "No strong trade found. Indicators not aligned."})
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# Required for Render
+def get_spot_price():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    data = requests.get(url, headers=headers).json()
+    return float(data["data"][0]["last"])
+
+def get_option_chain():
+    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    data = requests.get(url, headers=headers).json()
+    return data["filtered"]["data"]
+
+def is_trade_valid(option, spot, type):
+    ltp = option.get("lastPrice", 0)
+    volume = option.get("totalTradedVolume", 0)
+    oi = option.get("openInterest", 0)
+    change_oi = option.get("changeinOpenInterest", 0)
+    iv = option.get("impliedVolatility", 0)
+
+    # STRATEGY FILTERS (institution-style logic)
+    if ltp < 1 or volume < 50000:
+        return False  # illiquid
+
+    if type == "CE" and spot < option.get("strikePrice", 0):
+        return False
+    if type == "PE" and spot > option.get("strikePrice", 0):
+        return False
+
+    if change_oi < 0 or iv == 0:
+        return False  # no momentum
+
+    return True  # passed all filters
+
+def format_trade(type, option):
+    ltp = option["lastPrice"]
+    return {
+        "symbol": "NIFTY",
+        "type": type,
+        "strike": option["strikePrice"],
+        "ltp": ltp,
+        "entry": ltp,
+        "sl": round(ltp * 0.92, 2),
+        "target": round(ltp * 1.12, 2),
+        "volume": option["totalTradedVolume"]
+    }
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
