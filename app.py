@@ -3,7 +3,7 @@ import requests
 
 app = Flask(__name__)
 
-PROXY_BASE_URL = "https://happy-trees-prove.loca.lt"
+PROXY_BASE_URL = "https://plain-rockets-show.loca.lt"
 
 @app.route("/")
 def home():
