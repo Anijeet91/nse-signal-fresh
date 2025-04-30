@@ -1,90 +1,59 @@
 from flask import Flask, jsonify
-import requests
+import cloudscraper
 
 app = Flask(__name__)
+scraper = cloudscraper.create_scraper()  # handles headers + cookies
 
-PROXY_BASE_URL = "https://clever-goats-enjoy.loca.lt"
-
-@app.route("/")
+@app.route('/')
 def home():
     return jsonify({"status": "NSE Signal API Running"})
 
-@app.route("/besttrade")
-def get_best_trade():
+@app.route('/besttrade')
+def best_trade():
     try:
-        spot = get_spot_price()
-        option_chain = get_option_chain()
+        # 1. Fetch Spot Price
+        spot_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
+        spot_data = scraper.get(spot_url).json()
+        price = spot_data['data'][0]['lastPrice']
 
-        best = None
+        # 2. Compute Strike
+        strike = int(round(price / 50) * 50)
 
-        for item in option_chain:
-            strike = item["strikePrice"]
-            ce = item.get("CE", {})
-            pe = item.get("PE", {})
+        # 3. Fetch Option Chain
+        option_url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        option_data = scraper.get(option_url).json()
+        options = option_data['filtered']['data']
 
-            # Entry decision based on trend
-            if spot > ce.get("strikePrice", 0):  # Spot is bullish, check CE
-                if is_trade_valid(ce, spot, "CE"):
-                    best = format_trade("CE", ce)
-                    break
-            elif spot < pe.get("strikePrice", 0):  # Spot is bearish, check PE
-                if is_trade_valid(pe, spot, "PE"):
-                    best = format_trade("PE", pe)
-                    break
+        # 4. Pick Option
+        selected = None
+        for row in options:
+            if row['strikePrice'] == strike:
+                ce = row.get('CE')
+                if ce and ce.get('lastPrice') and ce.get('totalTradedVolume'):
+                    entry = ce['lastPrice']
+                    volume = ce['totalTradedVolume']
+                    sl = round(entry * 0.9, 2)
+                    target = round(entry * 1.2, 2)
 
-        if best:
-            return jsonify(best)
+                    selected = {
+                        "symbol": "NIFTY",
+                        "type": "CE",
+                        "strike": strike,
+                        "ltp": entry,
+                        "entry": entry,
+                        "sl": sl,
+                        "target": target,
+                        "volume": volume
+                    }
+                break
+
+        if selected:
+            return jsonify(selected)
         else:
-            return jsonify({"message": "No strong trade found. Indicators not aligned."})
+            return jsonify({"message": "No strong trade found."})
+
     except Exception as e:
         return jsonify({"error": str(e)})
 
-def get_spot_price():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    data = requests.get(url, headers=headers).json()
-    return float(data["data"][0]["last"])
-
-def get_option_chain():
-    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    data = requests.get(url, headers=headers).json()
-    return data["filtered"]["data"]
-
-def is_trade_valid(option, spot, type):
-    ltp = option.get("lastPrice", 0)
-    volume = option.get("totalTradedVolume", 0)
-    oi = option.get("openInterest", 0)
-    change_oi = option.get("changeinOpenInterest", 0)
-    iv = option.get("impliedVolatility", 0)
-
-    # STRATEGY FILTERS (institution-style logic)
-    if ltp < 1 or volume < 50000:
-        return False  # illiquid
-
-    if type == "CE" and spot < option.get("strikePrice", 0):
-        return False
-    if type == "PE" and spot > option.get("strikePrice", 0):
-        return False
-
-    if change_oi < 0 or iv == 0:
-        return False  # no momentum
-
-    return True  # passed all filters
-
-def format_trade(type, option):
-    ltp = option["lastPrice"]
-    return {
-        "symbol": "NIFTY",
-        "type": type,
-        "strike": option["strikePrice"],
-        "ltp": ltp,
-        "entry": ltp,
-        "sl": round(ltp * 0.92, 2),
-        "target": round(ltp * 1.12, 2),
-        "volume": option["totalTradedVolume"]
-    }
-
-# ✅ THIS IS THE FIX FOR RENDER DEPLOYMENT
-if __name__ == "__main__":
-    app.run(debug=False, host='0.0.0.0', port=5000)
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=5000)
