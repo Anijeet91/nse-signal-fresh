@@ -1,59 +1,91 @@
 from flask import Flask, jsonify
-import cloudscraper
+import requests
 
 app = Flask(__name__)
-scraper = cloudscraper.create_scraper()  # handles headers + cookies
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0',
+    'Referer': 'https://www.nseindia.com'
+}
 
 @app.route('/')
-def home():
+def index():
     return jsonify({"status": "NSE Signal API Running"})
 
-@app.route('/besttrade')
-def best_trade():
+@app.route('/price')
+def get_price():
     try:
-        # 1. Fetch Spot Price
-        spot_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
-        spot_data = scraper.get(spot_url).json()
-        price = spot_data['data'][0]['lastPrice']
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        data = response.json()
+        spot_price = data["records"]["underlyingValue"]
+        return jsonify({"price": spot_price, "symbol": "NIFTY"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-        # 2. Compute Strike
-        strike = int(round(price / 50) * 50)
+@app.route('/raw')
+def get_raw():
+    try:
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        return response.json()
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-        # 3. Fetch Option Chain
-        option_url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        option_data = scraper.get(option_url).json()
-        options = option_data['filtered']['data']
+@app.route('/besttrade')
+def get_best_trade():
+    try:
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        data = response.json()
+        spot = data["records"]["underlyingValue"]
+        all_data = data["filtered"]["data"]
 
-        # 4. Pick Option
-        selected = None
-        for row in options:
-            if row['strikePrice'] == strike:
-                ce = row.get('CE')
-                if ce and ce.get('lastPrice') and ce.get('totalTradedVolume'):
-                    entry = ce['lastPrice']
-                    volume = ce['totalTradedVolume']
-                    sl = round(entry * 0.9, 2)
-                    target = round(entry * 1.2, 2)
+        # Filter strike nearest ITM CE and PE
+        best_ce = None
+        best_pe = None
+        max_vol_ce = 0
+        max_vol_pe = 0
 
-                    selected = {
+        for item in all_data:
+            strike = item["strikePrice"]
+            if "CE" in item and item["CE"]:
+                vol = item["CE"].get("totalTradedVolume", 0)
+                if spot >= strike and vol > max_vol_ce:
+                    max_vol_ce = vol
+                    best_ce = {
                         "symbol": "NIFTY",
                         "type": "CE",
                         "strike": strike,
-                        "ltp": entry,
-                        "entry": entry,
-                        "sl": sl,
-                        "target": target,
-                        "volume": volume
+                        "ltp": item["CE"].get("lastPrice", 0),
+                        "volume": vol
                     }
-                break
 
-        if selected:
-            return jsonify(selected)
-        else:
-            return jsonify({"message": "No strong trade found."})
+            if "PE" in item and item["PE"]:
+                vol = item["PE"].get("totalTradedVolume", 0)
+                if spot <= strike and vol > max_vol_pe:
+                    max_vol_pe = vol
+                    best_pe = {
+                        "symbol": "NIFTY",
+                        "type": "PE",
+                        "strike": strike,
+                        "ltp": item["PE"].get("lastPrice", 0),
+                        "volume": vol
+                    }
+
+        if not best_ce and not best_pe:
+            return jsonify({"message": "No strong trade found"})
+
+        # Pick stronger signal
+        best = best_ce if max_vol_ce > max_vol_pe else best_pe
+        best["entry"] = best["ltp"]
+        best["target"] = round(best["ltp"] * 1.2, 2)
+        best["sl"] = round(best["ltp"] * 0.9, 2)
+
+        return jsonify(best)
 
     except Exception as e:
         return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=False, host='0.0.0.0')
