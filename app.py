@@ -3,88 +3,81 @@ import requests
 
 app = Flask(__name__)
 
-PROXY_BASE_URL = "https://smart-bottles-speak.loca.lt"
+# --- Config ---
+INDEX = "NIFTY"
+SPOT_URL = f"https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
+CHAIN_URL = f"https://www.nseindia.com/api/option-chain-indices?symbol={INDEX}"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+}
+
+def get_spot_price():
+    response = requests.get(SPOT_URL, headers=HEADERS, timeout=10)
+    data = response.json()
+    return float(data["data"][0]["last"])
+
+def get_option_chain():
+    response = requests.get(CHAIN_URL, headers=HEADERS, timeout=10)
+    return response.json()
+
+def calculate_trade():
+    try:
+        spot = get_spot_price()
+        data = get_option_chain()
+        option_data = data["filtered"]["data"]
+        best_trade = None
+
+        for item in option_data:
+            strike = item["strikePrice"]
+            ce = item.get("CE", {})
+            pe = item.get("PE", {})
+
+            # Check proximity (ATM or ITM)
+            if abs(strike - spot) <= 50:
+                for opt_type, opt_data in [("CE", ce), ("PE", pe)]:
+                    try:
+                        ltp = float(opt_data["lastPrice"])
+                        volume = int(opt_data["totalTradedVolume"])
+                        oi = int(opt_data["openInterest"])
+                        change = float(opt_data["changeinOpenInterest"])
+
+                        # Light indicator filter (momentum bias)
+                        if ltp > 1 and volume > 100000 and abs(change) > 1000:
+                            score = volume + abs(change)
+                            if not best_trade or score > best_trade["score"]:
+                                best_trade = {
+                                    "symbol": INDEX,
+                                    "strike": strike,
+                                    "type": opt_type,
+                                    "ltp": ltp,
+                                    "entry": round(ltp, 1),
+                                    "sl": round(ltp * 0.9, 1),
+                                    "target": round(ltp * 1.2, 1),
+                                    "volume": volume,
+                                    "score": score
+                                }
+                    except Exception:
+                        continue
+
+        if best_trade:
+            best_trade.pop("score")
+            return jsonify(best_trade)
+        else:
+            return jsonify({"message": "No strong trade found. Indicators not aligned."})
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route("/")
 def home():
     return jsonify({"status": "NSE Signal API Running"})
 
 @app.route("/besttrade")
-def get_best_trade():
-    try:
-        spot = get_spot_price()
-        option_chain = get_option_chain()
+def best_trade():
+    return calculate_trade()
 
-        best = None
-
-        for item in option_chain:
-            strike = item["strikePrice"]
-            ce = item.get("CE", {})
-            pe = item.get("PE", {})
-
-            # Entry decision based on trend
-            if spot > ce.get("strikePrice", 0):  # Spot is bullish, check CE
-                if is_trade_valid(ce, spot, "CE"):
-                    best = format_trade("CE", ce)
-                    break
-            elif spot < pe.get("strikePrice", 0):  # Spot is bearish, check PE
-                if is_trade_valid(pe, spot, "PE"):
-                    best = format_trade("PE", pe)
-                    break
-
-        if best:
-            return jsonify(best)
-        else:
-            return jsonify({"message": "No strong trade found. Indicators not aligned."})
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-def get_spot_price():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY 50"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    data = requests.get(url, headers=headers).json()
-    return float(data["data"][0]["last"])
-
-def get_option_chain():
-    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    data = requests.get(url, headers=headers).json()
-    return data["filtered"]["data"]
-
-def is_trade_valid(option, spot, type):
-    ltp = option.get("lastPrice", 0)
-    volume = option.get("totalTradedVolume", 0)
-    oi = option.get("openInterest", 0)
-    change_oi = option.get("changeinOpenInterest", 0)
-    iv = option.get("impliedVolatility", 0)
-
-    # STRATEGY FILTERS (institution-style logic)
-    if ltp < 1 or volume < 50000:
-        return False  # illiquid
-
-    if type == "CE" and spot < option.get("strikePrice", 0):
-        return False
-    if type == "PE" and spot > option.get("strikePrice", 0):
-        return False
-
-    if change_oi < 0 or iv == 0:
-        return False  # no momentum
-
-    return True  # passed all filters
-
-def format_trade(type, option):
-    ltp = option["lastPrice"]
-    return {
-        "symbol": "NIFTY",
-        "type": type,
-        "strike": option["strikePrice"],
-        "ltp": ltp,
-        "entry": ltp,
-        "sl": round(ltp * 0.92, 2),
-        "target": round(ltp * 1.12, 2),
-        "volume": option["totalTradedVolume"]
-    }
-
-# ✅ THIS IS THE FIX FOR RENDER DEPLOYMENT
 if __name__ == "__main__":
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    app.run(debug=False, port=5000)
